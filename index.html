@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>BHARATFLY</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React and ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="bg-gray-100">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useRef } = React;
+
+      // =============================
+      // Main App
+      // =============================
+      function BHARATFLYApp() {
+        const [route, setRoute] = useState("dashboard");
+        const [drone, setDrone] = useState({
+          id: "SD-001",
+          lat: 12.9716,
+          lon: 77.5946,
+          battery: 86,
+          status: "Idle",
+        });
+        const [logs, setLogs] = useState([]);
+        const [selectedDest, setSelectedDest] = useState(null);
+        const [missionActive, setMissionActive] = useState(false);
+        const [speedMps] = useState(15);
+        const [cameraOn, setCameraOn] = useState(false);
+        const mapRef = useRef(null);
+
+        useEffect(() => {
+          let interval = null;
+          if (missionActive && selectedDest) {
+            interval = setInterval(() => {
+              setDrone((d) => {
+                const dx = selectedDest.lat - d.lat;
+                const dy = selectedDest.lon - d.lon;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 0.0001) {
+                  completeMission();
+                  return { ...d, lat: selectedDest.lat, lon: selectedDest.lon, status: "Idle" };
+                }
+                const step = (speedMps / 111111) * 0.8;
+                const nx = d.lat + (dx / dist) * step;
+                const ny = d.lon + (dy / dist) * step;
+                return { ...d, lat: nx, lon: ny, status: "En route" };
+              });
+              setDrone((d) => ({ ...d, battery: Math.max(0, d.battery - 0.02) }));
+            }, 1000);
+          }
+          return () => clearInterval(interval);
+        }, [missionActive, selectedDest]);
+
+        function haversineDistance(a, b) {
+          const R = 6371000;
+          const toRad = (x) => (x * Math.PI) / 180;
+          const dLat = toRad(b.lat - a.lat);
+          const dLon = toRad(b.lon - a.lon);
+          const lat1 = toRad(a.lat);
+          const lat2 = toRad(b.lat);
+          const aa =
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
+          const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+          return R * c;
+        }
+
+        function onMapClick(e) {
+          if (!mapRef.current) return;
+          const rect = mapRef.current.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+          const fx = x / rect.width;
+          const fy = y / rect.height;
+          const latMin = 12.95;
+          const latMax = 12.99;
+          const lonMin = 77.58;
+          const lonMax = 77.61;
+          const lat = latMin + fx * (latMax - latMin);
+          const lon = lonMin + fy * (lonMax - lonMin);
+          const dest = { lat, lon };
+          setSelectedDest(dest);
+        }
+
+        function startMission(fromEmergency = false, meta = {}) {
+          if (!selectedDest) return alert("Tap the map to select a destination first.");
+          setMissionActive(true);
+          setDrone((d) => ({ ...d, status: "Taking off" }));
+          const id = `M-${Date.now()}`;
+          setLogs((l) => [
+            {
+              id,
+              start: new Date().toISOString(),
+              origin: { lat: drone.lat, lon: drone.lon },
+              dest: selectedDest,
+              meta,
+              status: "Started",
+            },
+            ...l,
+          ]);
+        }
+
+        function completeMission() {
+          setMissionActive(false);
+          setDrone((d) => ({ ...d, status: "Idle" }));
+          setLogs((l) =>
+            l.map((r) =>
+              r.status === "Started"
+                ? { ...r, end: new Date().toISOString(), status: "Completed" }
+                : r
+            )
+          );
+          setSelectedDest(null);
+          setCameraOn(false);
+          alert("Mission completed — drone reached destination.");
+        }
+
+        function cancelMission() {
+          setMissionActive(false);
+          setDrone((d) => ({ ...d, status: "Idle" }));
+          setLogs((l) =>
+            l.map((r) =>
+              r.status === "Started"
+                ? { ...r, end: new Date().toISOString(), status: "Canceled" }
+                : r
+            )
+          );
+        }
+
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-white text-gray-800">
+            <div className="max-w-5xl mx-auto p-4">
+              <Header route={route} setRoute={setRoute} drone={drone} />
+
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="md:col-span-2">
+                  {route === "dashboard" && (
+                    <Dashboard
+                      drone={drone}
+                      onOpenMission={() => setRoute("mission")}
+                      onOpenEmergency={() => setRoute("emergency")}
+                      onOpenReports={() => setRoute("reports")}
+                    />
+                  )}
+                  {route === "mission" && (
+                    <MissionControl
+                      drone={drone}
+                      mapRef={mapRef}
+                      onMapClick={onMapClick}
+                      selectedDest={selectedDest}
+                      startMission={startMission}
+                      missionActive={missionActive}
+                      cameraOn={cameraOn}
+                      setCameraOn={setCameraOn}
+                      cancelMission={cancelMission}
+                      haversineDistance={haversineDistance}
+                    />
+                  )}
+                  {route === "emergency" && (
+                    <EmergencyOps
+                      drone={drone}
+                      selectedDest={selectedDest}
+                      onMapClick={onMapClick}
+                      mapRef={mapRef}
+                      startMission={(meta) => startMission(true, meta)}
+                      setSelectedDest={setSelectedDest}
+                      haversineDistance={haversineDistance}
+                    />
+                  )}
+                  {route === "reports" && <Reports logs={logs} />}
+                </div>
+
+                <div className="md:col-span-1">
+                  <StatusCard drone={drone} missionActive={missionActive} />
+                  <div className="mt-4">
+                    <QuickActions
+                      setRoute={setRoute}
+                      startMission={startMission}
+                      missionActive={missionActive}
+                    />
+                  </div>
+                  <div className="mt-4 p-3 bg-white rounded-2xl shadow-sm">
+                    <h3 className="font-semibold mb-2">Live Camera</h3>
+                    <div className="h-48 bg-gray-100 rounded-md flex items-center justify-center">
+                      {cameraOn ? (
+                        <div className="text-sm">
+                          [Simulated Camera Stream — Drone Camera Active]
+                        </div>
+                      ) : (
+                        <div className="text-sm text-gray-500">
+                          Camera is off. Toggle from Mission Control.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <Footer />
+            </div>
+          </div>
+        );
+      }
+
+      // =============================
+      // Components
+      // =============================
+      function Header({ route, setRoute, drone }) {
+        return (
+          <header className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-2xl flex items-center justify-center text-white font-bold">
+                BF
+              </div>
+              <div>
+                <div className="text-lg font-bold">BHARATFLY</div>
+                <div className="text-xs text-gray-500">
+                  For Atmanirbhar Bharat — Robotics &amp; Drones
+                </div>
+              </div>
+            </div>
+
+            <nav className="flex items-center gap-2">
+              <NavButton
+                active={route === "dashboard"}
+                onClick={() => setRoute("dashboard")}
+                label="Dashboard"
+              />
+              <NavButton
+                active={route === "mission"}
+                onClick={() => setRoute("mission")}
+                label="Mission Control"
+              />
+              <NavButton
+                active={route === "emergency"}
+                onClick={() => setRoute("emergency")}
+                label="Emergency Ops"
+              />
+              <NavButton
+                active={route === "reports"}
+                onClick={() => setRoute("reports")}
+                label="Reports"
+              />
+
+              <div className="ml-4 p-2 bg-white rounded-lg shadow-sm text-sm">
+                ID: <span className="font-semibold">{drone.id}</span>
+              </div>
+            </nav>
+          </header>
+        );
+      }
+
+      function NavButton({ active, onClick, label }) {
+        return (
+          <button
+            onClick={onClick}
+            className={`px-3 py-2 rounded-lg text-sm font-medium ${
+              active ? "bg-indigo-600 text-white shadow" : "text-gray-700 bg-white"
+            }`}
+          >
+            {label}
+          </button>
+        );
+      }
+
+      function Dashboard({ drone, onOpenMission, onOpenEmergency, onOpenReports }) {
+        return (
+          <div className="p-4 bg-white rounded-2xl shadow-sm">
+            <h2 className="text-xl font-semibold mb-2">Dashboard</h2>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="p-3 border rounded-lg">
+                <div className="text-sm text-gray-500">Status</div>
+                <div className="mt-1 font-semibold text-lg">{drone.status}</div>
+              </div>
+              <div className="p-3 border rounded-lg">
+                <div className="text-sm text-gray-500">Battery</div>
+                <div className="mt-1 font-semibold text-lg">
+                  {Math.round(drone.battery)}%
+                </div>
+              </div>
+              <div className="p-3 border rounded-lg">
+                <div className="text-sm text-gray-500">Location</div>
+                <div className="mt-1 text-sm">
+                  {drone.lat.toFixed(5)}, {drone.lon.toFixed(5)}
+                </div>
+              </div>
+              <div className="p-3 border rounded-lg">
+                <div className="text-sm text-gray-500">Connectivity</div>
+                <div className="mt-1 text-sm">5G / LoRa fallback</div>
+              </div>
+            </div>
+
+            <div className="mt-4 flex gap-3">
+              <button
+                className="px-4 py-2 bg-indigo-600 text-white rounded-lg"
+                onClick={onOpenMission}
+              >
+                Open Mission Control
+              </button>
+              <button
+                className="px-4 py-2 bg-rose-500 text-white rounded-lg"
+                onClick={onOpenEmergency}
+              >
+                Emergency Ops
+              </button>
+              <button
+                className="px-4 py-2 border rounded-lg"
+                onClick={onOpenReports}
+              >
+                Reports
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      function MissionControl({
+        drone,
+        mapRef,
+        onMapClick,
+        selectedDest,
+        startMission,
+        missionActive,
+        cameraOn,
+        setCameraOn,
+        cancelMission,
+        haversineDistance,
+      }) {
+        return (
+          <div className="p-4 bg-white rounded-2xl shadow-sm">
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">Mission Control</h2>
+                <div className="text-sm text-gray-500">
+                  Tap map to select a destination. Set mission and monitor live.
+                </div>
+              </div>
+              <div className="text-sm">
+                <div>
+                  Drone: <span className="font-medium">{drone.id}</span>
+                </div>
+                <div>
+                  Battery:{" "}
+                  <span className="font-medium">{Math.round(drone.battery)}%</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="md:col-span-1">
+                <div
+                  ref={mapRef}
+                  onClick={onMapClick}
+                  className="h-64 bg-gradient-to-br from-gray-100 to-white rounded-lg border relative cursor-crosshair"
+                >
+                  <MapOverlay drone={drone} selectedDest={selectedDest} />
+                  <div className="absolute bottom-2 left-2 bg-white/80 p-2 rounded-md text-xs">
+                    Map placeholder (click to set destination)
+                  </div>
+                </div>
+
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={() => startMission()}
+                    disabled={missionActive}
+                    className={`px-3 py-2 rounded-lg font-medium ${
+                      missionActive ? "bg-gray-200" : "bg-indigo-600 text-white"
+                    }`}
+                  >
+                    {missionActive ? "Mission Active" : "Start Mission"}
+                  </button>
+                  <button
+                    onClick={() => setCameraOn((v) => !v)}
+                    className="px-3 py-2 rounded-lg border"
+                  >
+                    Toggle Camera
+                  </button>
+                  <button
+                    onClick={() => cancelMission()}
+                    className="px-3 py-2 rounded-lg border text-sm"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+
+              <div className="md:col-span-1 p-3 border rounded-lg">
+                <div className="text-sm text-gray-500">Selected Destination</div>
+                {selectedDest ? (
+                  <div className="mt-2">
+                    <div className="text-sm">
+                      {selectedDest.lat.toFixed(5)}, {selectedDest.lon.toFixed(5)}
+                    </div>
+                    <div className="mt-2">
+                      Est. straight-line distance:{" "}
+                      <span className="font-semibold">
+                        {(haversineDistance(drone, selectedDest) / 1000).toFixed(2)}{" "}
+                        km
+                      </span>
+                    </div>
+                    <div className="mt-1">
+                      Rough ETA (at {15} m/s):{" "}
+                      <span className="font-semibold">
+                        {(haversineDistance(drone, selectedDest) / 15 / 60).toFixed(1)}{" "}
+                        min
+                      </span>
+                    </div>
+
+                    <div className="mt-3">
+                      <h4 className="font-medium">Mission Details</h4>
+                      <div className="text-sm text-gray-600">
+                        Payload: Standard emergency kit
+                      </div>
+                      <div className="text-sm text-gray-600">Priority: Normal</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-2 text-sm text-gray-500">
+                    No destination selected.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function MapOverlay({ drone, selectedDest }) {
+        const latMin = 12.95;
+        const latMax = 12.99;
+        const lonMin = 77.58;
+        const lonMax = 77.61;
+
+        function posFor({ lat, lon }) {
+          const fx = (lat - latMin) / (latMax - latMin);
+          const fy = (lon - lonMin) / (lonMax - lonMin);
+          return { left: `${fx * 100}%`, top: `${fy * 100}%` };
+        }
+
+        return (
+          <>
+            <div
+              style={posFor(drone)}
+              className="absolute transform -translate-x-1/2 -translate-y-1/2"
+            >
+              <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs shadow">
+                D
+              </div>
+            </div>
+            {selectedDest && (
+              <div
+                style={posFor(selectedDest)}
+                className="absolute transform -translate-x-1/2 -translate-y-1/2"
+              >
+                <div className="w-6 h-6 rounded-full bg-rose-500 text-white flex items-center justify-center text-xs shadow">
+                  X
+                </div>
+              </div>
+            )}
+          </>
+        );
+      }
+
+      function EmergencyOps({
+        drone,
+        selectedDest,
+        onMapClick,
+        mapRef,
+        startMission,
+        setSelectedDest,
+        haversineDistance,
+      }) {
+        const [patient, setPatient] = useState({
+          name: "",
+          condition: "Serious",
+          urgency: "High",
+        });
+
+        return (
+          <div className="p-4 bg-white rounded-2xl shadow-sm">
+            <h2 className="text-xl font-semibold">Emergency Operations</h2>
+            <div className="text-sm text-gray-500">
+              Send critical supplies quickly using the drone network.
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <div
+                  ref={mapRef}
+                  onClick={onMapClick}
+                  className="h-64 bg-gradient-to-br from-gray-100 to-white rounded-lg border relative cursor-crosshair"
+                >
+                  <MapOverlay drone={drone} selectedDest={selectedDest} />
+                  <div className="absolute bottom-2 left-2 bg-white/80 p-2 rounded-md text-xs">
+                    Map placeholder (click to set emergency location)
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-3 border rounded-lg">
+                <h3 className="font-medium">Patient / Emergency Info</h3>
+                <div className="mt-2">
+                  <label className="text-sm block">Patient Name</label>
+                  <input
+                    type="text"
+                    value={patient.name}
+                    onChange={(e) => setPatient({ ...patient, name: e.target.value })}
+                    className="w-full mt-1 px-2 py-1 border rounded"
+                  />
+                </div>
+                <div className="mt-2">
+                  <label className="text-sm block">Condition</label>
+                  <select
+                    value={patient.condition}
+                    onChange={(e) =>
+                      setPatient({ ...patient, condition: e.target.value })
+                    }
+                    className="w-full mt-1 px-2 py-1 border rounded"
+                  >
+                    <option>Stable</option>
+                    <option>Serious</option>
+                    <option>Critical</option>
+                  </select>
+                </div>
+                <div className="mt-2">
+                  <label className="text-sm block">Urgency</label>
+                  <select
+                    value={patient.urgency}
+                    onChange={(e) =>
+                      setPatient({ ...patient, urgency: e.target.value })
+                    }
+                    className="w-full mt-1 px-2 py-1 border rounded"
+                  >
+                    <option>Normal</option>
+                    <option>High</option>
+                    <option>Immediate</option>
+                  </select>
+                </div>
+
+                <button
+                  onClick={() =>
+                    startMission({ patient, emergency: true })
+                  }
+                  className="mt-3 px-3 py-2 bg-rose-600 text-white rounded-lg"
+                >
+                  Dispatch Emergency Mission
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function Reports({ logs }) {
+        return (
+          <div className="p-4 bg-white rounded-2xl shadow-sm">
+            <h2 className="text-xl font-semibold mb-2">Reports</h2>
+            {logs.length === 0 ? (
+              <div className="text-sm text-gray-500">No missions logged yet.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="border px-2 py-1">ID</th>
+                      <th className="border px-2 py-1">Start</th>
+                      <th className="border px-2 py-1">End</th>
+                      <th className="border px-2 py-1">Origin</th>
+                      <th className="border px-2 py-1">Destination</th>
+                      <th className="border px-2 py-1">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logs.map((log) => (
+                      <tr key={log.id}>
+                        <td className="border px-2 py-1">{log.id}</td>
+                        <td className="border px-2 py-1">{log.start}</td>
+                        <td className="border px-2 py-1">{log.end || "-"}</td>
+                        <td className="border px-2 py-1">
+                          {log.origin.lat.toFixed(3)}, {log.origin.lon.toFixed(3)}
+                        </td>
+                        <td className="border px-2 py-1">
+                          {log.dest.lat.toFixed(3)}, {log.dest.lon.toFixed(3)}
+                        </td>
+                        <td className="border px-2 py-1">{log.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      function StatusCard({ drone, missionActive }) {
+        return (
+          <div className="p-3 bg-white rounded-2xl shadow-sm">
+            <h3 className="font-semibold">Drone Status</h3>
+            <div className="mt-2 text-sm">
+              <div>
+                Location: {drone.lat.toFixed(4)}, {drone.lon.toFixed(4)}
+              </div>
+              <div>Battery: {Math.round(drone.battery)}%</div>
+              <div>Status: {drone.status}</div>
+              <div>
+                {missionActive ? (
+                  <span className="text-green-600">Mission Active</span>
+                ) : (
+                  <span className="text-gray-500">Idle</span>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function QuickActions({ setRoute, startMission, missionActive }) {
+        return (
+          <div className="p-3 bg-white rounded-2xl shadow-sm">
+            <h3 className="font-semibold">Quick Actions</h3>
+            <div className="mt-2 flex flex-col gap-2">
+              <button
+                onClick={() => setRoute("mission")}
+                className="px-3 py-2 bg-indigo-600 text-white rounded-lg"
+              >
+                Go to Mission Control
+              </button>
+              <button
+                onClick={() => setRoute("emergency")}
+                className="px-3 py-2 bg-rose-500 text-white rounded-lg"
+              >
+                Emergency Dispatch
+              </button>
+              <button
+                onClick={() => setRoute("reports")}
+                className="px-3 py-2 border rounded-lg"
+              >
+                View Reports
+              </button>
+              <button
+                onClick={() => startMission()}
+                disabled={missionActive}
+                className={`px-3 py-2 rounded-lg ${
+                  missionActive
+                    ? "bg-gray-200 text-gray-600"
+                    : "bg-green-600 text-white"
+                }`}
+              >
+                {missionActive ? "Mission Running" : "Start Quick Mission"}
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      function Footer() {
+        return (
+          <footer className="mt-6 text-xs text-gray-500 text-center">
+            © {new Date().getFullYear()} Bharat Fly Drones • Made in India 🇮🇳
+          </footer>
+        );
+      }
+
+      // =============================
+      // Render App
+      // =============================
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<BHARATFLYApp />);
+    </script>
+  </body>
+</html>
